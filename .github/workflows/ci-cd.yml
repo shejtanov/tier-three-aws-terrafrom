@@ -1,0 +1,61 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v2
+
+    - name: Set up AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: eu-north-1
+
+    # Initialize and apply Terraform
+    - name: Initialize Terraform
+      run: |
+        cd infrastructure
+        terraform init
+    - name: Apply Terraform
+      run: |
+        cd infrastructure
+        terraform apply -auto-approve
+
+    # Build and push Docker image for Backend
+    - name: Login to Amazon ECR
+      run: |
+        echo $(aws ecr get-login-password --region eu-north-1) | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_REGISTRY }}
+    - name: Build, tag, and push Docker image to ECR
+      run: |
+        docker build -t ${{ secrets.AWS_ECR_REGISTRY }}/backend-app:latest ./backend/
+        docker push ${{ secrets.AWS_ECR_REGISTRY }}/backend-app:latest
+
+    # Update ECS Service
+    - name: Update ECS Service
+      run: |
+        cd infrastructure
+        terraform taint aws_ecs_service.service
+        terraform apply -auto-approve
+
+    # Build and deploy React frontend
+    - name: Build React App
+      run: |
+        cd frontend/
+        npm install
+        REACT_APP_API_URL=${{ secrets.BACKEND_API_URL }} npm run build
+        npm run build
+    - name: Deploy to S3
+      run: |
+        aws s3 sync ./frontend/build/ s3://${{ secrets.AWS_S3_BUCKET_NAME }} --delete
+    # - name: Invalidate CloudFront Distribution
+    #   run: |
+    #     aws cloudfront create-invalidation --distribution-id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
